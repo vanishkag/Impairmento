@@ -14,7 +14,7 @@ SignAgent lets Deaf, hard-of-hearing and speech-impaired people use agentic AI b
 
 ## Sign in
 
-You can sign in with your own Google account, or use the shared demo account below.
+You can sign in with your own Google account, or a dummy account, and follow the below steps.
 
 
 
