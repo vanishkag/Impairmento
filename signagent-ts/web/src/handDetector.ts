@@ -37,8 +37,9 @@ export async function getHandLandmarker(): Promise<HandLandmarker> {
         },
         runningMode: 'VIDEO',
         numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
+        minHandDetectionConfidence: 0.25,
+        minHandPresenceConfidence: 0.25,
+        minTrackingConfidence: 0.25,
       });
     };
 

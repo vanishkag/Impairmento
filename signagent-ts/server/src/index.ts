@@ -131,14 +131,14 @@ Output ONLY the clean translated English sentence, with no conversational filler
         { text: prompt },
         { media: { url: videoDataUrl } },
       ],
-      config: { temperature: 0.1 },
+      config: { temperature: 0.1, maxOutputTokens: 60 },
     });
 
     const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
     res.json({ translation });
   } catch (e: any) {
     console.error('Translation error:', e);
-    const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-2.5-flash,gemini-1.5-flash').split(',');
+    const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',');
     for (const m of fallbacks.map((s) => s.trim()).filter(Boolean)) {
       try {
         const response = await ai.generate({
@@ -147,7 +147,7 @@ Output ONLY the clean translated English sentence, with no conversational filler
             { text: prompt },
             { media: { url: videoDataUrl } },
           ],
-          config: { temperature: 0.1 },
+          config: { temperature: 0.1, maxOutputTokens: 60 },
         });
         const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
         return res.json({ translation });

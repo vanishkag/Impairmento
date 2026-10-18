@@ -38,11 +38,14 @@ function Camera({
   const handsLostTimerRef = useRef<any>(null);
   const recordingStartTimeRef = useRef<number>(0);
   const consecutiveHandFramesRef = useRef<number>(0);
+  const consecutiveEmptyFramesRef = useRef<number>(0);
+  const lastTimestampRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
 
   // React state for UI HUD
   const [err, setErr] = useState('');
   const [uiStatus, setUiStatus] = useState<'loading' | 'waiting' | 'recording' | 'countdown' | 'processing'>('loading');
+  const [handsDetected, setHandsDetected] = useState(0);
   const [recordSecs, setRecordSecs] = useState(0);
 
   // Stop recording and send
@@ -83,7 +86,14 @@ function Camera({
       const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find((t) =>
         MediaRecorder.isTypeSupported(t)
       );
-      const mr = new MediaRecorder(streamRef.current, mimeType ? { mimeType } : undefined);
+      // 350 kbps produces ~250KB for a 5s sign clip: ultra-fast upload & 5x faster Gemini vision inference
+      const mrOptions: MediaRecorderOptions = {
+        videoBitsPerSecond: 350_000,
+      };
+      if (mimeType) {
+        mrOptions.mimeType = mimeType;
+      }
+      const mr = new MediaRecorder(streamRef.current, mrOptions);
 
       mr.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
@@ -140,8 +150,14 @@ function Camera({
 
     async function init() {
       try {
+        // 640x360 at 24fps provides ideal aspect ratio, sharp hand details, and minimal memory/compression overhead
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 360 },
+            frameRate: { ideal: 24, max: 30 },
+            facingMode: 'user',
+          },
           audio: false,
         });
         if (!active) {
@@ -165,12 +181,20 @@ function Camera({
           if (video && video.readyState >= 2 && landmarkerInstance) {
             if (canvas && (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
               canvas.width = video.videoWidth || 640;
-              canvas.height = video.videoHeight || 480;
+              canvas.height = video.videoHeight || 360;
             }
 
             if (video.currentTime !== lastVideoTime) {
               lastVideoTime = video.currentTime;
-              const results = landmarkerInstance.detectForVideo(video, performance.now());
+
+              // Strictly monotonic timestamp for MediaPipe Video mode
+              const now = performance.now();
+              const timestamp = Math.max(lastTimestampRef.current + 1, now);
+              lastTimestampRef.current = timestamp;
+
+              const results = landmarkerInstance.detectForVideo(video, timestamp);
+              const count = results.landmarks ? results.landmarks.length : 0;
+              setHandsDetected(count);
 
               const ctx = canvas?.getContext('2d');
               if (ctx && canvas) {
@@ -191,9 +215,10 @@ function Camera({
                 }
               }
 
-              const hasHands = results.landmarks && results.landmarks.length > 0;
+              const hasHands = count > 0;
 
               if (hasHands) {
+                consecutiveEmptyFramesRef.current = 0;
                 if (handsLostTimerRef.current) {
                   clearTimeout(handsLostTimerRef.current);
                   handsLostTimerRef.current = null;
@@ -208,11 +233,14 @@ function Camera({
                 }
               } else {
                 consecutiveHandFramesRef.current = 0;
-                if (isRecordingRef.current && !handsLostTimerRef.current) {
+                consecutiveEmptyFramesRef.current++;
+                // Debounce hand absence: require at least 8 consecutive empty frames (~300ms)
+                // to prevent crossing or touching hands in 2-hand mode from triggering a premature countdown
+                if (isRecordingRef.current && consecutiveEmptyFramesRef.current >= 8 && !handsLostTimerRef.current) {
                   setUiStatus('countdown');
                   handsLostTimerRef.current = setTimeout(() => {
                     finishRecording();
-                  }, 1500);
+                  }, 1400);
                 }
               }
             }
@@ -266,6 +294,12 @@ function Camera({
                 <span className="cam-badge">⚙️ Sending video...</span>
               )}
             </>
+          )}
+
+          {handsDetected > 0 && !isBusyExternal && (
+            <span className="cam-badge ready">
+              {handsDetected >= 2 ? '✌️ 2 Hands' : '✋ 1 Hand'}
+            </span>
           )}
         </div>
       </div>
