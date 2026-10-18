@@ -1,6 +1,6 @@
 # SignAgent 🤟
 
-An AI-powered assistant designed for Deaf, speech-disabled, and hard-of-hearing professionals. **SignAgent** interprets sign language video clips and natural text commands, bridging communication by executing enterprise workflows across Google Workspace (Google Calendar, Gmail, Google Tasks, Google Docs, and Google Maps) using Google Gemini and Genkit.
+An AI-powered assistant designed for Deaf, speech-disabled, and hard-of-hearing professionals. **SignAgent** interprets sign language video clips—supporting both **Indian Sign Language (ISL)** and **American Sign Language (ASL)**—as well as natural text commands, bridging communication by executing enterprise workflows across Google Workspace (Google Calendar, Gmail, Google Tasks, Google Docs, and Google Maps) using Google Gemini and Genkit.
 
 ---
 
