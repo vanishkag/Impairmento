@@ -41,7 +41,6 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .composer input{flex:1;border:0;background:transparent;font:inherit;color:var(--ink);padding:10px 0;outline-offset:6px}
 .icon{width:44px;height:44px;padding:0;display:grid;place-items:center;border-radius:50%;background:transparent;color:var(--ink)}
 .icon.on{background:var(--blue);color:var(--blue-ink)}
-.icon.send{background:var(--blue);color:var(--blue-ink)}
 .cam{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,0.1)}
 .cam-viewport{position:relative;width:100%;aspect-ratio:16/9;min-height:280px;max-height:380px;background:#000;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .cam-viewport video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
@@ -70,4 +69,3 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .err{color:var(--bad)}
 .dots{color:var(--mute)}
 @media(prefers-reduced-motion:no-preference){main{scroll-behavior:smooth}}
-
