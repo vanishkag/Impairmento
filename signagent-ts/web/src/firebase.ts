@@ -17,13 +17,7 @@ const SCOPES = [
 export async function signIn() {
   const provider = new GoogleAuthProvider();
   SCOPES.forEach((s) => provider.addScope(s));
-  // Explicitly prompt for consent so Google requests all OAuth scopes (Calendar, Gmail, Tasks, Docs)
-  provider.setCustomParameters({
-    prompt: 'consent',
-    access_type: 'offline',
-  });
   const result = await signInWithPopup(getAuth(app), provider);
   const cred = GoogleAuthProvider.credentialFromResult(result);
-  console.log('[Auth] Signed in user:', result.user.email, 'Token available:', !!cred?.accessToken);
   return { email: result.user.email ?? '', token: cred?.accessToken ?? '' };
 }

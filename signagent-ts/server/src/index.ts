@@ -16,22 +16,13 @@ const als = new AsyncLocalStorage<Ctx>();
 
 async function G(url: string, body: unknown): Promise<any> {
   const c = als.getStore()!;
-  if (process.env.DRY_RUN === 'true' || !c.token) {
-    console.log(`[Tool] Simulated execution (DRY_RUN=${process.env.DRY_RUN}, tokenPresent=${Boolean(c.token)})`);
-    return { simulated: true };
-  }
-  console.log(`[Tool] Calling Google API: ${url}`);
+  if (process.env.DRY_RUN === 'true' || !c.token) return { simulated: true };
   const r = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${c.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const j: any = await r.json();
-  if (!r.ok) {
-    console.error(`[Tool] Google API error (${r.status} ${r.statusText}):`, JSON.stringify(j));
-  } else {
-    console.log(`[Tool] Google API succeeded:`, JSON.stringify(j));
-  }
   return r.ok ? j : { error: j.error?.message ?? r.statusText };
 }
 
