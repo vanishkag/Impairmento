@@ -129,7 +129,8 @@ Output ONLY the clean translated English sentence, with no conversational filler
     ...(process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(','),
   ].map((s) => s.trim()).filter(Boolean);
 
-  const translateTemp = Number(process.env.GEMINI_TRANSLATE_TEMPERATURE ?? 0.0);
+  const translateTemp = Number(process.env.GEMINI_TRANSLATE_TEMPERATURE ?? 0.2);
+  const translateTopP = Number(process.env.GEMINI_TRANSLATE_TOP_P ?? 0.85);
 
   let lastErr: any = null;
   for (const m of candidates) {
@@ -142,7 +143,7 @@ Output ONLY the clean translated English sentence, with no conversational filler
         ],
         config: {
           temperature: translateTemp,
-          topK: 1,
+          topP: translateTopP,
           maxOutputTokens: 80,
         },
       });
