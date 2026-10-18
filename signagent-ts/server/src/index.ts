@@ -51,7 +51,7 @@ const tools = [
     }, true),
   tool('add_task', 'Add a to-do to Google Tasks. due is optional ISO 8601.',
     z.object({ title: z.string(), notes: z.string().optional(), due: z.string().optional() }),
-    (i) => G('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', { title: i.title, notes: i.notes, due: i.due })),
+    (i) => G('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', { title: i.title, notes: i.notes, due: i.due }), true),
   tool('create_note_doc', 'Save a note or document as a Google Doc.',
     z.object({ title: z.string(), content: z.string() }),
     async (i) => {
@@ -70,12 +70,13 @@ const system = () => `You are SignAgent, an assistant for Deaf, speech-disabled,
 Now: ${new Date().toLocaleString('en-GB', { timeZone: TZ, dateStyle: 'full', timeStyle: 'short' })} (${TZ}). Resolve relative dates ("coming Sunday") from this, and use ISO 8601 with the timezone offset.
 When a sign language video clip is provided, watch the clip carefully, interpret the sign gestures and intent, and use the active workspace context to disambiguate pronouns and references. Users may sign in Indian Sign Language (ISL) or American Sign Language (ASL), including two-handed or one-handed manual alphabets and gestures; recognize both ISL and ASL accurately.
 Use tools to do what the user asks; chain several tools for multi-step requests (e.g. trip planning = note + calendar event + directions).
+If a tool execution is cancelled or declined by the user, acknowledge that the action was cancelled and that nothing was created, scheduled, or sent.
 If a required detail is missing or you are unsure what was signed, ask ONE short question instead of guessing. Never invent email addresses.
 Reply in one or two plain, simple sentences saying what was done.`;
 
 async function gen(opts: any) {
   let err: any;
-  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-2.5-flash,gemini-1.5-flash').split(',');
+  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(',');
   for (const m of [MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))
     for (let a = 0; a < 3; a++) {
       try { return await ai.generate({ ...opts, model: googleAI.model(m), tools }); }
@@ -189,9 +190,23 @@ app.post('/api/chat', (q, r) => serve(q, r, (s) => {
 }));
 app.post('/api/confirm', (q, r) => serve(q, r, async (s) => {
   if (!s.pending) throw new Error('Nothing to confirm');
-  const resume = q.body.approved
-    ? { restart: s.pending.map((i: any) => T[i.toolRequest.name].restart(i, { approved: true })) }
-    : { respond: s.pending.map((i: any) => T[i.toolRequest.name].respond(i, { cancelled: 'User declined' })) };
+  if (!q.body.approved) {
+    const actionNames = s.pending.map((i: any) => i.toolRequest?.name ? i.toolRequest.name.replace(/_/g, ' ') : 'action').join(', ');
+    const resume = {
+      respond: s.pending.map((i: any) => T[i.toolRequest.name].respond(i, {
+        cancelled: true,
+        error: 'User explicitly declined and cancelled this action. Do not execute, schedule, send, or create anything.'
+      }))
+    };
+    const res = await gen({ messages: s.messages, resume });
+    const reply = res.text?.trim() || '';
+    const claimsSuccess = /created|scheduled|added|sent|booked|done/i.test(reply) && !/cancelled|canceled|declined|not created|did not/i.test(reply);
+    const text = (claimsSuccess || !reply)
+      ? `Action cancelled. Nothing was ${actionNames.includes('email') ? 'sent' : 'scheduled or created'}.`
+      : reply;
+    return { messages: res.messages, text };
+  }
+  const resume = { restart: s.pending.map((i: any) => T[i.toolRequest.name].restart(i, { approved: true })) };
   return gen({ messages: s.messages, resume });
 }));
 app.listen(Number(process.env.PORT ?? 8080), () => console.log('SignAgent server on :' + (process.env.PORT ?? 8080)));
