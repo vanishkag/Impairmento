@@ -19,6 +19,7 @@ In fast-paced enterprise environments, workplace collaboration tools (Google Cal
 Instead of treating sign language as an isolated classification task, SignAgent uses **multimodal visual reasoning combined with active workspace context** to understand user intent, chain multi-step workflows, and execute actions across Google Workspace with human-in-the-loop safety controls.
 
 ---
+Please refer this for the judges guide: https://github.com/vanishkag/Impairmento/blob/main/Judge_Testing_Guide.md
 
 ## 🚀 Key Innovations
 
