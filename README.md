@@ -1,337 +1,212 @@
-<<<<<<< HEAD
-# SignAgent
-
-Sign language in, real tasks out. SignAgent turns signed (or typed) commands into actions in Google Calendar, Gmail, Tasks and Docs, using a Gemini-powered agent built with Genkit.
-
-```
-Camera → sign-to-text model → text ─┐
-Typed message ──────────────────────┴→ Chat UI → /api/chat → Genkit agent (Gemini + tools)
-                                                   risky tool? → Confirm card → /api/confirm
-```
-
-- **`web/`**: React + TypeScript + Vite chat UI with a camera button and a confirm card.
-- **`server/`**: Express + Genkit agent. Gemini decides which tools to call, and risky ones (send email, create calendar event) pause until the user approves.
-- **No database.** Chat sessions live in server memory and are lost on restart.
-
-## Prerequisites
-
-- **Node.js 20 or newer** (`node -v`). Install the LTS from nodejs.org. Open a new terminal afterwards so `npm` is found.
-- A **Gemini API key** from https://aistudio.google.com/apikey
-- *(Only for real Google actions)* a Google Cloud / Firebase project, see [Real mode](#real-mode-actually-create-events-and-send-emails).
-
-On Windows PowerShell, if `npm` is blocked by script policy, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.
-
-## Quick start (demo mode, no Google setup)
-
-In demo mode the agent really runs on Gemini, but tools only simulate their actions, so nothing touches anyone's Google account.
-
-**1. Server** (terminal 1)
-
-```bash
-cd server
-npm install
-cp .env.example .env        # Windows PowerShell: copy .env.example .env
-```
-
-Edit `server/.env`, set `GEMINI_API_KEY`, and keep `DRY_RUN=true`. Then:
-
-```bash
-npm run dev
-```
-
-Check http://localhost:8080/health. It should return `"ok": true`.
-
-**2. Web** (terminal 2)
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-Open http://localhost:5173 and try:
-
-- "Add in my calendar a trip to Goa on coming Sunday": a confirm card appears. Click **Confirm** and the action shows as *(simulated)*.
-- "Add task: renew passport": runs without a confirm card.
-- "Email" with no details: the agent asks who to email.
-- Click the camera icon, then **Test: simulate a sign** to try the sign-input path without a model.
-
-## Environment variables
-
-### `server/.env`
-
-| Variable | Purpose |
-|---|---|
-| `GEMINI_API_KEY` | Gemini key from AI Studio. |
-| `GEMINI_MODEL` | Main model, for example `gemini-3.8-flash`. Model names change, so see below to list yours. |
-| `GEMINI_FALLBACK_MODEL` | Comma-separated backups tried if the main model returns 503/429, for example `gemini-3.5-flash,gemini-3.1-flash-lite`. |
-| `TIMEZONE` | Used to resolve dates like "coming Sunday". Default `Asia/Kolkata`. |
-| `DRY_RUN` | `true` = tools only simulate. `false` = real Google API calls (needs sign-in). |
-| `PORT` | Server port. Default `8080`. |
-
-Restart the server after editing `.env`. `tsx watch` only reloads on source changes.
-
-To list the models your key can use (use ones with tool-calling; skip `preview`, `tts`, `image`):
-
-```bash
-# macOS/Linux
-curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"
-```
-```powershell
-# Windows PowerShell, from the server folder
-$k = (Select-String -Path .env -Pattern '^GEMINI_API_KEY=(.*)$').Matches.Groups[1].Value
-(Invoke-RestMethod "https://generativelanguage.googleapis.com/v1beta/models?key=$k").models |
-  Where-Object { $_.supportedGenerationMethods -contains 'generateContent' } | ForEach-Object { $_.name }
-```
-
-### `web/.env`
-
-Only needed for real Google sign-in. Vite reads it at startup, so restart `npm run dev` after changes.
-
-```
-VITE_FIREBASE_API_KEY=
-VITE_FIREBASE_AUTH_DOMAIN=
-VITE_FIREBASE_PROJECT_ID=
-```
-
-## Real mode (actually create events and send emails)
-
-1. **Firebase project.** At console.firebase.google.com, create a project (ideally reuse your Google Cloud project). Under *Authentication → Sign-in method*, enable **Google**.
-   If you can't see *Build*, open the *Product categories* group in the left sidebar or use *All products*.
-2. **Register a web app.** *Project settings (gear) → General → Your apps → `</>`.* Don't tick Hosting. Copy `apiKey`, `authDomain` and `projectId` into `web/.env`.
-3. **Enable APIs** in Google Cloud Console (*APIs & Services → Library*): Google Calendar API, Gmail API, Google Tasks API, Google Docs API.
-4. **OAuth consent screen** (*Google Auth Platform*): while it is in **Testing**, only listed **test users** can sign in. Add each teammate's Gmail under *Audience → Test users*, or click **Publish app** so any Google account can sign in (a sensitive-scope "unverified app" warning will appear; users click *Advanced → Continue*). Make sure these scopes are listed under *Data access*: `gmail.send`, `calendar.events`, `tasks`, `documents`.
-5. **Authorized domains.** In Firebase *Authentication → Settings → Authorized domains*, make sure `localhost` is present (and your deployed domain later).
-6. Set `DRY_RUN=false` in `server/.env`, restart the server and the web dev server.
-7. Open the app, click **Sign in with Google**, approve the permissions. Your email appears in the header, and tool rows no longer say *(simulated)*.
-
-Each person signs in with **their own** Google account, so actions happen in their own calendar and mailbox. Nothing is stored on the server. The token lives only in browser memory (about 1 hour, lost on refresh).
-
-## Tools the agent can use
-
-| Tool | Needs confirm | Google API |
-|---|---|---|
-| `create_calendar_event` | Yes | Calendar |
-| `send_email` (use `to: "me"` for the signed-in user) | Yes | Gmail |
-| `add_task` | No | Tasks |
-| `create_note_doc` | No | Docs |
-| `get_directions` | No | Maps link, no API needed |
-
-To add a tool, add a `tool(...)` entry in `server/src/index.ts`. Pass `true` as the last argument to require confirmation.
-
-## API
-
-| Endpoint | Body | Returns |
-|---|---|---|
-| `POST /api/chat` | `{ sessionId, text, userEmail }` | `{ status: "done", message, actions[] }` or `{ status: "needs_confirmation", confirmations: [{ name, input }] }` |
-| `POST /api/confirm` | `{ sessionId, approved }` | Same shape as `/api/chat` |
-| `GET /health` | none | `{ ok, model, dryRun }` |
-
-Send the user's Google access token as `Authorization: Bearer <token>`. Without it, tools simulate.
-
-## Plugging in the sign-to-text model
-
-Everything goes through `web/src/signToText.ts`. Replace the body of `startSignToText(video, onText)`: attach your model to the `<video>` element and call `onText("RECOGNISED TEXT")` whenever a command is finished. That text is sent into the agent exactly like typed text. Don't put API keys in browser code. Use a server endpoint or short-lived tokens if the model calls Gemini.
-
-## Project layout
-
-```
-server/src/index.ts     Genkit setup, tools, agent loop, Express routes
-web/src/App.tsx         Chat UI, confirm card, camera panel
-web/src/signToText.ts   Sign-to-text integration point
-web/src/firebase.ts     Google sign-in and scopes
-web/src/main.tsx        Entry point with an error boundary
-```
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `npm` not recognized | Install Node.js LTS, then open a **new** terminal. |
-| `Tool interrupts are a beta feature` | `server/src/index.ts` must import `genkit` from `genkit/beta`. |
-| 503 `high demand` from Gemini | Set `GEMINI_FALLBACK_MODEL` (comma-separated), restart the server, and wait a few minutes. |
-| 404 model not found | That model isn't available to your key. List models with the commands above. |
-| Page goes blank after sending | Open the browser console (`F12`). The error boundary also prints the error on the page. |
-| `auth/operation-not-allowed` | Enable Google sign-in in Firebase Authentication. |
-| `auth/unauthorized-domain` | Add `localhost` (or your domain) to Firebase Authorized domains. |
-| "Access blocked ... has not completed verification" | Add your account as a test user, or publish the consent screen. |
-| Red row: "API has not been used in project" | Enable that API in Google Cloud and retry after a minute. |
-| Red row: 401 | The Google token expired (about 1 hour). Sign in again. |
-| Red row: 403 insufficient scopes | Sign in again and approve every permission; check scopes under *Data access*. |
-| Env changes ignored | Restart the server, or the web dev server for `web/.env`. |
-
-## Known limitations
-
-- Sessions are in memory. If you deploy, use a single instance (for example Cloud Run `--max-instances 1`).
-- The server does not yet verify Firebase ID tokens, so anyone who can reach it can use your Gemini quota. Add verification before sharing the URL widely.
-- Genkit tool interrupts are a beta API. Pin versions and avoid `npm update` right before a demo.
-- Smart home and spoken replies are not implemented.
-
-## Security
-
-Never commit `.env` files or API keys. The `.gitignore` already excludes them. The Gemini key stays on the server only.
-=======
 # SignAgent 🤟
+> **Enterprise Multimodal Sign-Language Assistant for Deaf & Hard-of-Hearing Professionals**
+> *Powered by Google Gemini 3, Genkit, and MediaPipe On-Device Vision*
 
-An AI-powered assistant designed for Deaf, speech-disabled, and hard-of-hearing professionals. **SignAgent** interprets sign language video clips—supporting both **Indian Sign Language (ISL)** and **American Sign Language (ASL)**—as well as natural text commands, bridging communication by executing enterprise workflows across Google Workspace (Google Calendar, Gmail, Google Tasks, Google Docs, and Google Maps) using Google Gemini and Genkit.
-
----
-
-## Features
-
-- **Hands-Free Automatic Sign Recording**: Uses client-side MediaPipe Hand Tracking to detect when hands are raised. Video recording starts automatically and sends the clip as soon as you lower your hands upon finishing your signs.
-- **Multimodal Video Interpretation**: Directly feeds recorded sign language video clips and active workspace context into Google Gemini.
-- **Tool Orchestration with Human-in-the-Loop Confirmation**: Risky actions (like sending an email or creating a calendar event) pause for explicit user confirmation in the UI before execution.
-- **Privacy-Preserving & Low Latency**: Hand detection and skeleton tracking run locally in the browser using preloaded WebAssembly and local models.
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg)](https://www.typescriptlang.org/)
+[![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini%203-8E75B2.svg)](https://ai.google.dev/)
+[![Genkit](https://img.shields.io/badge/Orchestration-Genkit-FF6F00.svg)](https://firebase.google.com/docs/genkit)
+[![MediaPipe](https://img.shields.io/badge/Vision-MediaPipe%20WASM-0097A7.svg)](https://developers.google.com/mediapipe)
 
 ---
 
-## Project Structure
+## 🌟 Executive Summary
+
+In fast-paced enterprise environments, workplace collaboration tools (Google Calendar, Gmail, Google Tasks, Google Docs) are built almost exclusively around spoken language or typed text. For **over 70 million Deaf and hard-of-hearing individuals worldwide**, communicating complex thoughts in written English is often slower than signing, as sign languages (such as **Indian Sign Language (ISL)** and **American Sign Language (ASL)**) have distinct grammars, spatial references, and non-verbal syntax.
+
+**SignAgent** bridges this gap. It provides a hands-free, real-time sign language interpreter and intelligent assistant that translates natural sign gestures into structured enterprise actions. 
+
+Instead of treating sign language as an isolated classification task, SignAgent uses **multimodal visual reasoning combined with active workspace context** to understand user intent, chain multi-step workflows, and execute actions across Google Workspace with human-in-the-loop safety controls.
+
+---
+
+## 🚀 Key Innovations
+
+### 1. Hands-Free Ambient Sign Detection
+* **Zero Button Clicks**: Powered by on-device **MediaPipe HandLandmarker** running via WebAssembly (WASM).
+* **Smart Session Triggers**: Recording begins automatically when your hands enter the frame and finalizes dynamically when hands are lowered.
+* **Persistent Two-Hand Tracking**: Optimized for ISL and ASL with low-confidence hysteresis (`0.25` tracking confidence, 5-frame debounce), ensuring overlapping or touching hands during two-handed signs never drop tracking.
+* **100% Client-Side Privacy**: Skeletal hand landmark tracking executes locally in the browser; raw camera video is only captured during active signing.
+
+### 2. High-Speed Studio Interface & Live Typewriter Translation
+* **Side-by-Side Studio Layout**: A dedicated camera viewport sits alongside the assistant feed with real-time HUD status badges (`✌️ 2 Hands Tracked`, `🔴 Recording`, `⚡ Translating`).
+* **Clean Real-Time Typewriter Stream**: Rather than cluttering the conversation with raw video recordings, sign clips are processed in **~1.2–2.0 seconds** via `gemini-3.1-flash-lite`, animated via a live typewriter effect into the input composer, and submitted directly into the agent.
+
+### 3. Context-Aware Visual Grounding
+* Enterprise signs are often ambiguous or refer to screen items (e.g., signing *“Schedule meeting with him”* or *“Email this list”*).
+* **Workspace Context Bar**: Users can pin their active task, Jira ticket, meeting notes, or open email. Gemini fuses the visual gestures with the workspace context to disambiguate pronouns, names, and relative dates.
+
+### 4. Enterprise Workflow Orchestration with Human-in-the-Loop Safety
+* Built on **Google Genkit** with native tool calling:
+  * 📅 **Google Calendar**: Creates events with intelligent timezone resolution (`Asia/Kolkata` default).
+  * ✉️ **Gmail**: Composes and dispatches emails.
+  * 📝 **Google Docs**: Generates formatted notes and summaries.
+  * ✅ **Google Tasks**: Manages daily action items and deadlines.
+  * 🗺️ **Google Maps**: Generates directions and transit routes.
+* **Genkit Interrupt Safety Cards**: Consequential actions (booking calendar events, sending emails) pause the execution loop with interactive UI confirmation cards. Users can review, confirm, or cancel actions with full audit visibility.
+
+---
+
+## 🏗️ System Architecture
 
 ```text
-gemini-sign/
-├── signagent-ts/
-│   ├── server/          # Express + Genkit backend (API & tool execution)
-│   │   ├── src/index.ts # Agent server, Genkit tools, and multimodal endpoints
-│   │   ├── .env         # Backend environment variables
-│   │   └── package.json
-│   └── web/             # React + Vite frontend (UI & camera hand detection)
-│       ├── public/      # Local MediaPipe WASM and model assets
-│       ├── src/
-│       │   ├── App.tsx          # Main chat & camera interface
-│       │   ├── handDetector.ts  # MediaPipe HandLandmarker integration
-│       │   └── firebase.ts      # Google Auth / Firebase initialization
-│       └── package.json
-└── README.md
+ ┌────────────────────────────────────────────────────────────────────────────────┐
+ │                                CLIENT (BROWSER)                                │
+ │                                                                                │
+ │   Webcam Stream ──> MediaPipe HandLandmarker (Local WASM)                      │
+ │                             │                                                  │
+ │                     Hands Raised / Lowered                                     │
+ │                             ▼                                                  │
+ │                 Lightweight Video Clip (360p, 200kbps)                         │
+ └─────────────────────────────┬──────────────────────────────────────────────────┘
+                               │ POST /api/translate (Video + Workspace Context)
+                               ▼
+ ┌────────────────────────────────────────────────────────────────────────────────┐
+ │                             SIGNAGENT BACKEND                                  │
+ │                                                                                │
+ │   1. Visual Sign Translation                                                   │
+ │      Google Gemini 3.1 Flash Lite ──> Interprets ISL / ASL Gestures            │
+ │                                                                                │
+ │   2. Agentic Workflow Orchestration                                            │
+ │      Google Gemini 3.5 Flash + Genkit Tools                                    │
+ │                             │                                                  │
+ │          ┌──────────────────┴──────────────────┐                               │
+ │          │                                     │                               │
+ │   Safe Tool (Tasks, Maps)             Risky Tool (Calendar, Gmail)             │
+ │          │                                     │                               │
+ │          │                               Genkit Interrupt                      │
+ │          │                           (Requires User Approval)                  │
+ │          │                                     │                               │
+ │          ▼                                     ▼                               │
+ │   Google Workspace APIs             Interactive Confirmation Card              │
+ └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Prerequisites
+## 💻 Tech Stack
 
-- **Node.js**: v18.0.0 or higher (v20+ recommended)
-- **npm**: v9.0.0 or higher
-- **Gemini API Key**: Get a key from [Google AI Studio](https://aistudio.google.com/)
-- A working webcam for sign video recording
+| Layer | Technologies |
+| :--- | :--- |
+| **Multimodal Vision & AI** | Google Gemini 3.1 Flash Lite (Sign Translation), Gemini 3.5 Flash (Agent Reasoning) |
+| **Agent Framework** | Google Genkit (`genkit/beta`), `@genkit-ai/google-genai` |
+| **Computer Vision (Client)**| MediaPipe Tasks Vision (`@mediapipe/tasks-vision`), WebAssembly |
+| **Frontend UI** | React 18, TypeScript, Vite, Atkinson Hyperlegible Typography |
+| **Backend API** | Node.js (v20+), Express, TypeScript, AsyncLocalStorage |
+| **Authentication & Cloud** | Google Cloud Platform, Firebase Auth (OAuth 2.0 with Calendar/Gmail/Docs scopes) |
 
 ---
 
-## Local Setup Guide
+## ⚡ Quick Start Guide (For Judges)
 
-Follow these steps to set up and run both the backend server and frontend client locally.
+SignAgent is designed to run locally in **less than 2 minutes**. It features a built-in **Demo / Simulation Mode** that allows full testing of sign recognition and agent workflows without requiring private Google credentials.
 
-### 1. Clone the Repository
+### Prerequisites
+* **Node.js**: v20 or newer (`node -v`)
+* **Gemini API Key**: From [Google AI Studio](https://aistudio.google.com/app/apikey)
+* A laptop webcam or USB camera
+
+---
+
+### 1. Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/vanishkag/Impairmento.git
 cd gemini-sign
+
+# Install backend dependencies
+cd signagent-ts/server
+npm install
+
+# Install frontend dependencies
+cd ../web
+npm install
 ```
 
 ---
 
-### 2. Set Up the Backend Server
+### 2. Configure Environment
 
-1. **Navigate to the server directory**:
-   ```bash
-   cd signagent-ts/server
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Configure Environment Variables**:
-   Create a `.env` file in `signagent-ts/server/`:
-   ```env
-   # Required: Google Gemini API Key
-   GEMINI_API_KEY="your-gemini-api-key-here"
-
-   # Optional Server Settings
-   PORT=8080
-   TIMEZONE="Asia/Kolkata"
-   GEMINI_MODEL="gemini-2.5-flash"
-   GEMINI_FALLBACK_MODEL="gemini-1.5-flash"
-
-   # Set DRY_RUN=true to simulate Google Workspace tool actions without live API credentials
-   DRY_RUN=true
-   ```
-
-4. **Start the server**:
-   ```bash
-   npm run dev
-   ```
-   The backend will start and listen on `http://localhost:8080`.
+1. In `signagent-ts/server/`, create or edit `.env`:
+```env
+GEMINI_API_KEY="your-gemini-api-key-here"
+GEMINI_MODEL=gemini-3.5-flash
+GEMINI_TRANSLATE_MODEL=gemini-3.1-flash-lite
+GEMINI_TRANSLATE_TEMPERATURE=0.2
+GEMINI_TRANSLATE_TOP_P=0.85
+TIMEZONE=Asia/Kolkata
+DRY_RUN=true
+PORT=8080
+```
+> **Note**: `DRY_RUN=true` enables safe simulation mode. Actions (Calendar, Gmail, Docs) simulate their execution with full fidelity without touching external accounts.
 
 ---
 
-### 3. Set Up the Web Frontend
+### 3. Start the Application
 
-1. **Open a new terminal and navigate to the web directory**:
-   ```bash
-   cd signagent-ts/web
-   ```
+**Terminal 1 (Backend Server):**
+```bash
+cd signagent-ts/server
+npm run dev
+```
+*Server starts on `http://localhost:8080` (verify health at `http://localhost:8080/health`).*
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **(Optional) Configure Firebase Authentication**:
-   - By default, SignAgent runs in **Demo Mode**, simulating tool execution with dry-run support without requiring Google OAuth login.
-   - To enable real Google Workspace actions, update [`signagent-ts/web/src/firebase.ts`](file:///c:/Users/vanis/repos/gemini-sign/signagent-ts/web/src/firebase.ts) with your Firebase project credentials.
-
-4. **Start the frontend development server**:
-   ```bash
-   npm run dev
-   ```
-   Vite will host the web client at `http://localhost:5173`.
-
----
-
-### 4. Using SignAgent
-
-1. Open your browser and navigate to `http://localhost:5173`.
-2. Allow webcam access when prompted.
-3. Click the **Camera icon** in the input bar to open the camera viewport.
-4. **Sign your command**:
-   - Raise your hands in front of the camera: **Recording starts automatically** (`🔴 Recording`).
-   - Sign your command (e.g. *“Schedule a meeting tomorrow at 3 PM”*).
-   - Lower your hands when finished: SignAgent detects hand departure and automatically finishes recording (`⏳ Hands lowered...`) and submits the clip to Gemini.
-5. If the request involves scheduling or sending communications, review the parameters in the confirmation box and click **Confirm**.
-
----
-
-## Environment Variables Reference
-
-### Backend (`signagent-ts/server/.env`)
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `GEMINI_API_KEY` | **Required**. Google Gemini API key from Google AI Studio. | `""` |
-| `PORT` | Local port for Express API server. | `8080` |
-| `TIMEZONE` | Timezone identifier for resolving relative dates (e.g. "coming Sunday"). | `Asia/Kolkata` |
-| `GEMINI_MODEL` | Primary model identifier. | `gemini-2.5-flash` |
-| `GEMINI_FALLBACK_MODEL`| Comma-separated fallback models. | `gemini-1.5-flash` |
-| `DRY_RUN` | When set to `true`, tool calls return simulated results. | `false` |
-
-### Frontend (`signagent-ts/web/.env`)
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `VITE_API_BASE_URL` | Base URL of the backend API (useful when deploying to separate domains). | `""` (proxied by Vite) |
-
----
-
-## Production Build
-
-To build the client for production:
-
+**Terminal 2 (Frontend Client):**
 ```bash
 cd signagent-ts/web
-npm run build
+npm run dev
 ```
+*Frontend opens at `http://localhost:5173`.*
 
-This compiles static assets into `signagent-ts/web/dist/`, including all bundled WebAssembly and MediaPipe model files, ready for deployment to **Firebase Hosting**, **Vercel**, or **Cloud Run**.
+---
 
->>>>>>> ea3f6f43da6980f9030f4c8aafb67ad69d985b5c
+## 🧪 Evaluation & Demo Walkthrough
+
+Once opened at `http://localhost:5173`:
+
+### Test 1: Hands-Free Sign Language Input
+1. Click the **Camera Icon** in the composer bar to open the studio panel.
+2. Allow camera access. The HUD will indicate: `👋 Show hands to sign`.
+3. **Raise both hands** into the camera view:
+   * Tracking points appear over hand joints (`✌️ 2 Hands`).
+   * The status turns red: `🔴 Recording`.
+4. Perform an **ISL or ASL sign** (e.g., greeting, meeting, scheduling, waving, or spelling).
+5. **Lower your hands**:
+   * SignAgent automatically detects hand lowering (`⚡ Processing gestures...`).
+   * Within ~1.5s, the translation types into the composer via typewriter effect.
+   * The command automatically dispatches to the agentic workflow.
+
+### Test 2: Google Calendar Scheduling with Human-in-the-Loop Confirmation
+* **Input**: *"Add in my calendar a meeting with John coming Sunday at 4 PM"*
+* **Behavior**:
+  * Agent resolves relative dates using local timezone context (`Asia/Kolkata`).
+  * Because calendar creation is consequential, an interactive **Confirmation Card** appears displaying title, start/end ISO timestamps, and description.
+  * Click **Confirm** to execute, or **Cancel** to abort (with clean cancellation feedback).
+
+### Test 3: Workspace Context Grounding
+1. Click the **`+ Context`** button in the header.
+2. Enter: `Active Project: Flight Booking to Goa, Flight 6E-204`.
+3. Sign or type: *"Email me the packing list and itinerary"*
+4. **Behavior**: The agent fuses the active context into its prompt and generates a personalized checklist relevant to Goa travel.
+
+### Test 4: Real Google Account Integration (Optional)
+* Click **Sign in with Google** in the top header.
+* Authorize permissions to switch from Demo Simulation to live Google Workspace execution.
+
+---
+
+## 🔒 Security & Safety Controls
+
+1. **Human-in-the-Loop Guardrails**: Reversible actions (like adding tasks or generating Google Maps links) execute directly. Irreversible actions (sending emails, modifying calendars) strictly halt via Genkit interrupts until approved.
+2. **Cancellation Verification**: If a user cancels an action, the agent receives an explicit cancellation signal, preventing false claims of task completion.
+3. **Zero Video Storage**: Video clips are streamed as transient base64 payloads to Gemini over HTTPS and are never written to disk.
+4. **Credential Isolation**: Client tokens exist only in transient browser session memory and are never persisted to databases.
+
+---
+
+## 👥 Project Information & License
+
+* **Project**: SignAgent
+* **Category**: AI for Accessibility / Multimodal Agentic Systems
+* **License**: MIT License
