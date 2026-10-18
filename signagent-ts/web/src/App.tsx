@@ -6,6 +6,7 @@ type Msg = {
   role: 'user' | 'assistant';
   text: string;
   videoUrl?: string;
+  busy?: boolean;
   actions?: { tool: string; input: any; result: any }[];
 };
 type Conf = { name: string; input: Record<string, any> };
@@ -290,12 +291,14 @@ export default function App() {
   const [workspaceContext, setWorkspaceContext] = useState('');
   const [showContext, setShowContext] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
   const [pending, setPending] = useState<Conf[] | null>(null);
   const [cam, setCam] = useState(false);
   const [user, setUser] = useState<{ email: string; token: string } | null>(null);
   const sid = useRef(crypto.randomUUID());
   const end = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
+  const lastReq = useRef<{ path: string; body: object } | null>(null);
 
   useEffect(() => {
     preloadHandLandmarker();
@@ -303,13 +306,29 @@ export default function App() {
 
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [msgs, pending, busy]);
+  }, [msgs, pending, busy, note]);
 
   const add = (m: Msg) => setMsgs((x) => [...x, m]);
 
   const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
 
+  // While waiting, ask the server what it is doing (retrying / switching to a backup model).
+  useEffect(() => {
+    if (!busy) {
+      setNote('');
+      return;
+    }
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/status?sessionId=${sid.current}`);
+        setNote((await r.json()).note ?? '');
+      } catch {}
+    }, 1200);
+    return () => clearInterval(id);
+  }, [busy]);
+
   async function post(path: string, body: object) {
+    if (path === '/api/chat') lastReq.current = { path, body };
     busyRef.current = true;
     setBusy(true);
     try {
@@ -323,8 +342,12 @@ export default function App() {
       });
       const j = await r.json();
       console.log('agent response', j);
+      if (j.detail) console.warn(j.detail);
       if (j.status === 'needs_confirmation') setPending(j.confirmations);
-      else {
+      else if (j.status === 'busy') {
+        // Keep any pending confirmation so the Confirm button can be tried again.
+        add({ role: 'assistant', text: j.message, busy: true });
+      } else {
         setPending(null);
         add({ role: 'assistant', text: j.message, actions: j.actions });
       }
@@ -345,7 +368,7 @@ export default function App() {
     post('/api/chat', { text: t, workspaceContext: workspaceContext.trim() || undefined });
   }
 
-  // Multimodal sign video clip
+  // Multimodal sign video clip (sent for this turn only; the server drops it from history afterwards)
   function sendVideo(videoDataUrl: string) {
     if (busyRef.current || pending) return;
     add({ role: 'user', text: '📹 Sign language video clip', videoUrl: videoDataUrl });
@@ -355,6 +378,10 @@ export default function App() {
   function decide(approved: boolean) {
     add({ role: 'user', text: approved ? 'Approved' : 'Cancelled' });
     post('/api/confirm', { approved });
+  }
+
+  function retry() {
+    if (lastReq.current && !busyRef.current) post(lastReq.current.path, lastReq.current.body);
   }
 
   async function login() {
@@ -411,6 +438,11 @@ export default function App() {
               </div>
             )}
             <p>{m.text}</p>
+            {m.busy && !pending && !busy && i === msgs.length - 1 && (
+              <button className="ghost" onClick={retry}>
+                Try again
+              </button>
+            )}
             {m.actions?.map((a, k) => (
               <div key={k} className="act">
                 <b>{label(a.tool)}</b>
@@ -449,9 +481,9 @@ export default function App() {
           </div>
         )}
 
-        {busy && !pending && (
+        {busy && (
           <div className="msg assistant">
-            <p className="dots">Working…</p>
+            <p className="dots">{note || 'Working…'}</p>
           </div>
         )}
         <div ref={end} />

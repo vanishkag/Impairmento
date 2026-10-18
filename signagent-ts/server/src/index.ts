@@ -11,7 +11,7 @@ const TZ = process.env.TIMEZONE ?? 'Asia/Kolkata';
 const ai = genkit({ plugins: [googleAI()] });
 
 // Per-request context (the signed-in user's Google token + a log of what tools did)
-type Ctx = { token?: string; email?: string; log: any[] };
+type Ctx = { token?: string; email?: string; log: any[]; sid?: string };
 const als = new AsyncLocalStorage<Ctx>();
 
 async function G(url: string, body: unknown): Promise<any> {
@@ -73,45 +73,82 @@ Use tools to do what the user asks; chain several tools for multi-step requests 
 If a required detail is missing or you are unsure what was signed, ask ONE short question instead of guessing. Never invent email addresses.
 Reply in one or two plain, simple sentences saying what was done.`;
 
+// In-memory sessions (no database). `note` is a live status line the UI polls while waiting.
+const S = new Map<string, { messages: any[]; pending?: any[]; note?: string }>();
+
+// Replace attached video clips with a short placeholder so they are not re-sent to Gemini on every later turn.
+const stripMedia = (msgs: any[]) => msgs.map((m) => ({
+  ...m,
+  content: m.content?.map((p: any) => (p?.media ? { text: '[A sign language video clip was attached here and has already been interpreted.]' } : p)),
+}));
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isBusy = (e: any) => /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(String(e?.message ?? e));
+
+// Tries each model twice (main first, then fallbacks). Only "busy" errors move on to the next model;
+// real errors (bad key, bad request) are thrown immediately.
 async function gen(opts: any) {
+  const c = als.getStore();
+  const note = (t?: string) => { const s = c?.sid ? S.get(c.sid) : undefined; if (s) s.note = t; };
+  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash,gemini-3.1-flash-lite').split(',');
+  const models = [...new Set([MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))];
   let err: any;
-  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-2.5-flash,gemini-1.5-flash').split(',');
-  for (const m of [MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))
-    for (let a = 0; a < 3; a++) {
-      try { return await ai.generate({ ...opts, model: googleAI.model(m), tools }); }
-      catch (e: any) {
+  for (let mi = 0; mi < models.length; mi++) {
+    for (let a = 0; a < 2; a++) {
+      try {
+        // Testing aid: SIMULATE_BUSY=model1,model2 in .env pretends those models return 503
+        if (process.env.SIMULATE_BUSY?.split(',').map((s) => s.trim()).includes(models[mi])) throw new Error('503 UNAVAILABLE (simulated)');
+        const r = await ai.generate({ ...opts, model: googleAI.model(models[mi]), tools });
+        note(undefined);
+        return r;
+      } catch (e: any) {
         err = e;
-        if (!/503|429|UNAVAILABLE/.test(String(e))) throw e;
-        await new Promise((r) => setTimeout(r, 1500 * (a + 1)));
+        if (!isBusy(e)) { note(undefined); throw e; }
+        console.warn(`[gemini] ${models[mi]} busy (attempt ${a + 1})`);
+        if (a === 0) { note('High demand right now. Retrying…'); await sleep(1500); }
       }
     }
-  throw err;
+    if (mi < models.length - 1) note('Still busy. Switching to a backup model…');
+  }
+  note(undefined);
+  const busy: any = new Error('all models busy');
+  busy.busy = true;
+  busy.cause = err;
+  throw busy;
 }
 
-const S = new Map<string, { messages: any[]; pending?: any[] }>(); // in-memory sessions (no database)
-
-async function serve(req: express.Request, res: express.Response, build: (s: { messages: any[]; pending?: any[] }) => Promise<any>) {
+async function serve(req: express.Request, res: express.Response, build: (s: { messages: any[]; pending?: any[]; note?: string }) => Promise<any>) {
   const { sessionId, userEmail } = req.body;
   const s = S.get(sessionId) ?? { messages: [{ role: 'system', content: [{ text: system() }] }] };
   S.set(sessionId, s);
-  const ctx: Ctx = { token: req.headers.authorization?.replace('Bearer ', ''), email: userEmail, log: [] };
+  const ctx: Ctx = { token: req.headers.authorization?.replace('Bearer ', ''), email: userEmail, log: [], sid: sessionId };
   try {
     const r = await als.run(ctx, () => build(s));
-    s.messages = r.messages;
     s.pending = r.interrupts?.length ? r.interrupts : undefined;
+    // Keep the clip while a confirmation is pending (resume re-sends history once); drop it after the turn completes.
+    s.messages = s.pending ? r.messages : stripMedia(r.messages);
     res.json(s.pending
       ? { status: 'needs_confirmation', message: 'Please confirm this action.',
           confirmations: s.pending.map((i: any) => ({ name: i.toolRequest.name, input: i.toolRequest.input })) }
       : { status: 'done', message: r.text, actions: ctx.log });
   } catch (e: any) {
-    console.error(e);
-    res.status(500).json({ status: 'error', message: String(e?.message ?? e) });
+    console.error(e?.busy ? '[gemini] all models busy' : e);
+    s.note = undefined;
+    if (e?.busy) {
+      return res.status(503).json({
+        status: 'busy',
+        message: 'Gemini is under very high demand right now, so this is taking longer than usual. Nothing was lost. Please try again in a minute.',
+      });
+    }
+    res.status(500).json({ status: 'error', message: 'Something went wrong while handling that. Please try again.', detail: String(e?.message ?? e) });
   }
 }
 
 const app = express();
 app.use(cors(), express.json({ limit: '50mb' }), express.urlencoded({ limit: '50mb', extended: true }));
 app.get('/health', (_q, r) => r.json({ ok: true, model: MODEL, dryRun: process.env.DRY_RUN === 'true' }));
+app.get('/api/status', (q, r) => r.json({ note: S.get(String(q.query.sessionId))?.note ?? '' }));
+
 app.post('/api/chat', (q, r) => serve(q, r, (s) => {
   const { text, videoDataUrl, workspaceContext } = q.body ?? {};
   const promptParts: any[] = [];
@@ -138,6 +175,7 @@ app.post('/api/chat', (q, r) => serve(q, r, (s) => {
   const prompt = promptParts.length === 1 && promptParts[0].text ? promptParts[0].text : promptParts;
   return gen({ messages: s.messages, prompt });
 }));
+
 app.post('/api/confirm', (q, r) => serve(q, r, async (s) => {
   if (!s.pending) throw new Error('Nothing to confirm');
   const resume = q.body.approved
@@ -145,4 +183,5 @@ app.post('/api/confirm', (q, r) => serve(q, r, async (s) => {
     : { respond: s.pending.map((i: any) => T[i.toolRequest.name].respond(i, { cancelled: 'User declined' })) };
   return gen({ messages: s.messages, resume });
 }));
+
 app.listen(Number(process.env.PORT ?? 8080), () => console.log('SignAgent server on :' + (process.env.PORT ?? 8080)));
