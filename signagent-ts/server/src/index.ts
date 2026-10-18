@@ -124,37 +124,34 @@ ${workspaceContext ? `Active Workspace Context: ${workspaceContext}\n` : ''}
 Translate the sign gestures and intent into a natural, direct English command or sentence representing exactly what the user signed (e.g. "Schedule a meeting tomorrow at 3 PM", "Email me a packing list for Goa", "Directions to Bangalore airport").
 Output ONLY the clean translated English sentence, with no conversational filler, quotes, or markdown explanations.`;
 
-  try {
-    const response = await ai.generate({
-      model: googleAI.model(MODEL),
-      prompt: [
-        { text: prompt },
-        { media: { url: videoDataUrl } },
-      ],
-      config: { temperature: 0.1, maxOutputTokens: 60 },
-    });
+  const candidates = [
+    process.env.GEMINI_TRANSLATE_MODEL ?? 'gemini-3.1-flash-lite',
+    ...(process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(','),
+  ].map((s) => s.trim()).filter(Boolean);
 
-    const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
-    res.json({ translation });
-  } catch (e: any) {
-    console.error('Translation error:', e);
-    const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',');
-    for (const m of fallbacks.map((s) => s.trim()).filter(Boolean)) {
-      try {
-        const response = await ai.generate({
-          model: googleAI.model(m),
-          prompt: [
-            { text: prompt },
-            { media: { url: videoDataUrl } },
-          ],
-          config: { temperature: 0.1, maxOutputTokens: 60 },
-        });
-        const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
+  let lastErr: any = null;
+  for (const m of candidates) {
+    try {
+      const response = await ai.generate({
+        model: googleAI.model(m),
+        prompt: [
+          { text: prompt },
+          { media: { url: videoDataUrl } },
+        ],
+        config: { temperature: 0.1, maxOutputTokens: 80 },
+      });
+
+      const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
+      if (translation) {
         return res.json({ translation });
-      } catch {}
+      }
+    } catch (e: any) {
+      console.warn(`[Translate] Model ${m} error:`, e?.message || e);
+      lastErr = e;
     }
-    res.status(500).json({ error: String(e?.message ?? e) });
   }
+
+  res.status(500).json({ error: String(lastErr?.message ?? lastErr ?? 'Translation produced no output') });
 });
 
 app.post('/api/chat', (q, r) => serve(q, r, (s) => {

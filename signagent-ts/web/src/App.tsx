@@ -68,8 +68,8 @@ function Camera({
       }
     }
 
-    // Ignore if recording duration was too brief (< 800ms)
-    if (elapsed < 800) {
+    // Ignore if recording duration was too brief (< 600ms)
+    if (elapsed < 600) {
       setUiStatus('waiting');
       return;
     }
@@ -86,9 +86,9 @@ function Camera({
       const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find((t) =>
         MediaRecorder.isTypeSupported(t)
       );
-      // 350 kbps produces ~250KB for a 5s sign clip: ultra-fast upload & 5x faster Gemini vision inference
+      // 200 kbps @ 15fps creates tiny ~100KB-150KB clips: lightning-fast transfer & 1-2s Gemini vision processing
       const mrOptions: MediaRecorderOptions = {
-        videoBitsPerSecond: 350_000,
+        videoBitsPerSecond: 200_000,
       };
       if (mimeType) {
         mrOptions.mimeType = mimeType;
@@ -150,12 +150,12 @@ function Camera({
 
     async function init() {
       try {
-        // 640x360 at 24fps provides ideal aspect ratio, sharp hand details, and minimal memory/compression overhead
+        // 640x360 at 15-20fps captures sharp hand shapes with minimal frame bloat for rapid AI vision
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 640 },
             height: { ideal: 360 },
-            frameRate: { ideal: 24, max: 30 },
+            frameRate: { ideal: 15, max: 20 },
             facingMode: 'user',
           },
           audio: false,
@@ -234,13 +234,13 @@ function Camera({
               } else {
                 consecutiveHandFramesRef.current = 0;
                 consecutiveEmptyFramesRef.current++;
-                // Debounce hand absence: require at least 8 consecutive empty frames (~300ms)
-                // to prevent crossing or touching hands in 2-hand mode from triggering a premature countdown
-                if (isRecordingRef.current && consecutiveEmptyFramesRef.current >= 8 && !handsLostTimerRef.current) {
+                // Debounce: require 5 consecutive empty frames (~250ms), then 450ms finalize
+                // Cuts dead-air video by over 1 full second and finishes almost immediately after hands lower
+                if (isRecordingRef.current && consecutiveEmptyFramesRef.current >= 5 && !handsLostTimerRef.current) {
                   setUiStatus('countdown');
                   handsLostTimerRef.current = setTimeout(() => {
                     finishRecording();
-                  }, 1400);
+                  }, 450);
                 }
               }
             }
@@ -418,7 +418,7 @@ export default function App() {
       setIsTyping(true);
       setLiveTranslation('');
 
-      const delay = Math.max(15, Math.min(35, Math.floor(700 / translatedText.length)));
+      const delay = Math.max(8, Math.min(20, Math.floor(300 / translatedText.length)));
       for (let i = 1; i <= translatedText.length; i++) {
         const slice = translatedText.slice(0, i);
         setInput(slice);
@@ -427,7 +427,7 @@ export default function App() {
       }
 
       setIsTyping(false);
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 120));
       send(translatedText);
     } catch (e: any) {
       console.error(e);
