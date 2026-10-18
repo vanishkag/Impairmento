@@ -51,7 +51,7 @@ const tools = [
     }, true),
   tool('add_task', 'Add a to-do to Google Tasks. due is optional ISO 8601.',
     z.object({ title: z.string(), notes: z.string().optional(), due: z.string().optional() }),
-    (i) => G('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', { title: i.title, notes: i.notes, due: i.due }), true),
+    (i) => G('https://tasks.googleapis.com/tasks/v1/lists/@default/tasks', { title: i.title, notes: i.notes, due: i.due })),
   tool('create_note_doc', 'Save a note or document as a Google Doc.',
     z.object({ title: z.string(), content: z.string() }),
     async (i) => {
