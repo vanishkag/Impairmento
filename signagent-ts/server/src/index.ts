@@ -66,26 +66,17 @@ const tools = [
     async (i) => ({ url: `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(i.destination)}${i.origin ? `&origin=${encodeURIComponent(i.origin)}` : ''}` })),
 ];
 
-<<<<<<< HEAD
-const system = () => `You are SignAgent, an assistant for Deaf and hard-of-hearing users. Messages come from a sign-language recognizer or typing: they may be gloss-style, ALL CAPS, fingerspelled or contain recognition errors.
+const system = () => `You are SignAgent, an assistant for Deaf, speech-disabled, and hard-of-hearing users. Messages come from sign-language recognition, attached sign language video clips, or typing: they may be gloss-style, ALL CAPS, fingerspelled or contain recognition errors.
 Now: ${new Date().toLocaleString('en-GB', { timeZone: TZ, dateStyle: 'full', timeStyle: 'short' })} (${TZ}). Resolve relative dates ("coming Sunday") from this, and use ISO 8601 with the timezone offset.
-=======
-const system = () => `You are SignAgent, an enterprise AI assistant for Deaf, speech-disabled, and hard-of-hearing professionals. Messages come from sign-language recognition, attached sign language video clips, or typing: they may be gloss-style, ALL CAPS, fingerspelled or contain recognition errors.
-Now: ${new Date().toLocaleString('en-GB', { timeZone: TZ, dateStyle: 'full', timeStyle: 'short' })} (${TZ}). Resolve relative dates ("coming Sunday") from this, and use ISO 8601 with the timezone offset.
-When a sign language video clip is provided, watch the clip carefully, interpret the sign gestures and intent, and use the active workspace context to disambiguate pronouns and references.
->>>>>>> ea3f6f43da6980f9030f4c8aafb67ad69d985b5c
+When a sign language video clip is provided, watch the clip carefully, interpret the sign gestures and intent, and use the active workspace context to disambiguate pronouns and references. Users may sign in Indian Sign Language (ISL) or American Sign Language (ASL), including two-handed or one-handed manual alphabets and gestures; recognize both ISL and ASL accurately.
 Use tools to do what the user asks; chain several tools for multi-step requests (e.g. trip planning = note + calendar event + directions).
 If a required detail is missing or you are unsure what was signed, ask ONE short question instead of guessing. Never invent email addresses.
 Reply in one or two plain, simple sentences saying what was done.`;
 
 async function gen(opts: any) {
   let err: any;
-<<<<<<< HEAD
-  for (const m of [MODEL, ...(process.env.GEMINI_FALLBACK_MODEL ?? '').split(',')].map((s) => s.trim()).filter(Boolean))
-=======
   const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-2.5-flash,gemini-1.5-flash').split(',');
   for (const m of [MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))
->>>>>>> ea3f6f43da6980f9030f4c8aafb67ad69d985b5c
     for (let a = 0; a < 3; a++) {
       try { return await ai.generate({ ...opts, model: googleAI.model(m), tools }); }
       catch (e: any) {
@@ -119,11 +110,6 @@ async function serve(req: express.Request, res: express.Response, build: (s: { m
 }
 
 const app = express();
-<<<<<<< HEAD
-app.use(cors(), express.json());
-app.get('/health', (_q, r) => r.json({ ok: true, model: MODEL, dryRun: process.env.DRY_RUN === 'true' }));
-app.post('/api/chat', (q, r) => serve(q, r, (s) => gen({ messages: s.messages, prompt: q.body.text })));
-=======
 app.use(cors(), express.json({ limit: '50mb' }), express.urlencoded({ limit: '50mb', extended: true }));
 app.get('/health', (_q, r) => r.json({ ok: true, model: MODEL, dryRun: process.env.DRY_RUN === 'true' }));
 app.post('/api/chat', (q, r) => serve(q, r, (s) => {
@@ -152,7 +138,6 @@ app.post('/api/chat', (q, r) => serve(q, r, (s) => {
   const prompt = promptParts.length === 1 && promptParts[0].text ? promptParts[0].text : promptParts;
   return gen({ messages: s.messages, prompt });
 }));
->>>>>>> ea3f6f43da6980f9030f4c8aafb67ad69d985b5c
 app.post('/api/confirm', (q, r) => serve(q, r, async (s) => {
   if (!s.pending) throw new Error('Nothing to confirm');
   const resume = q.body.approved
