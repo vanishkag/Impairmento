@@ -2,6 +2,13 @@
   "name": "signagent-web",
   "private": true,
   "type": "module",
+<<<<<<< HEAD
+  "scripts": { "dev": "vite", "build": "vite build" },
+  "dependencies": { "firebase": "^10.12.0", "react": "^18.3.1", "react-dom": "^18.3.1" },
+  "devDependencies": {
+    "@types/react": "^18.3.3", "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0", "typescript": "^5.5.0", "vite": "^5.4.0"
+=======
   "scripts": {
     "dev": "vite",
     "build": "vite build"
@@ -18,5 +25,6 @@
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0"
+>>>>>>> ea3f6f43da6980f9030f4c8aafb67ad69d985b5c
   }
 }
