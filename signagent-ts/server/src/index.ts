@@ -31,8 +31,21 @@ const T: Record<string, any> = {};
 function tool(name: string, description: string, inputSchema: z.ZodTypeAny, run: (i: any) => Promise<any>, risky = false) {
   return (T[name] = ai.defineTool({ name, description, inputSchema, outputSchema: z.any() }, async (input: any, { interrupt, resumed }: any) => {
     if (risky && !resumed?.approved) interrupt();
+    // Idempotency: if Genkit re-runs this tool (e.g. we retried after a 503 on the follow-up model call,
+    // or the user pressed "Try again"), return the earlier result instead of repeating the side effect.
+    const c = als.getStore();
+    const sess = c?.sid ? S.get(c.sid) : undefined;
+    const key = `${name}:${JSON.stringify(input)}`;
+    const hit = sess?.done.get(key);
+    if (hit && Date.now() - hit.t < 10 * 60 * 1000) {
+      console.log(`[tool] reused ${name} (no duplicate action)`);
+      if (c && !c.log.some((l) => l.key === key)) c.log.push({ key, tool: name, input, result: hit.result });
+      return hit.result;
+    }
+    console.log(`[tool] run ${name}`);
     const result = await run(input);
-    als.getStore()?.log.push({ tool: name, input, result });
+    if (!result?.error) sess?.done.set(key, { t: Date.now(), result }); // never cache failures, so retries can succeed
+    c?.log.push({ key, tool: name, input, result });
     return result;
   }));
 }
@@ -74,7 +87,8 @@ If a required detail is missing or you are unsure what was signed, ask ONE short
 Reply in one or two plain, simple sentences saying what was done.`;
 
 // In-memory sessions (no database). `note` is a live status line the UI polls while waiting.
-const S = new Map<string, { messages: any[]; pending?: any[]; note?: string }>();
+type Session = { messages: any[]; pending?: any[]; note?: string; done: Map<string, { t: number; result: any }> };
+const S = new Map<string, Session>();
 
 // Replace attached video clips with a short placeholder so they are not re-sent to Gemini on every later turn.
 const stripMedia = (msgs: any[]) => msgs.map((m) => ({
@@ -85,41 +99,64 @@ const stripMedia = (msgs: any[]) => msgs.map((m) => ({
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isBusy = (e: any) => /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(String(e?.message ?? e));
 
-// Tries each model twice (main first, then fallbacks). Only "busy" errors move on to the next model;
-// real errors (bad key, bad request) are thrown immediately.
+// Seconds until a quota error resets (0 if the error is not a quota error). Daily free-tier quotas report hours.
+function quotaWait(e: any): number {
+  const m = String(e?.message ?? e);
+  if (!/429|RESOURCE_EXHAUSTED/.test(m)) return 0;
+  const d = m.match(/retryDelay"?:\s*"?(\d+)s/);
+  if (d) return Number(d[1]);
+  if (/PerDay/i.test(m)) return 3600;
+  const t = m.match(/retry in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i);
+  return t ? Number(t[1] ?? 0) * 3600 + Number(t[2] ?? 0) * 60 + Math.ceil(Number(t[3])) : 0;
+}
+const exhausted = new Map<string, number>(); // model -> time (ms) until which its daily quota is used up
+
+// Tries the main model, then the fallbacks. Short overloads (503 / per-minute 429) get one retry;
+// a used-up DAILY quota skips that model straight away. Real errors (bad key, bad request) are thrown immediately.
 async function gen(opts: any) {
   const c = als.getStore();
   const note = (t?: string) => { const s = c?.sid ? S.get(c.sid) : undefined; if (s) s.note = t; };
   const fallbacks = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash,gemini-3.1-flash-lite').split(',');
   const models = [...new Set([MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))];
   let err: any;
+  let quotaOnly = true;
   for (let mi = 0; mi < models.length; mi++) {
+    const m = models[mi];
+    if ((exhausted.get(m) ?? 0) > Date.now()) { console.warn(`[gemini] skipping ${m}: daily quota used up`); continue; }
     for (let a = 0; a < 2; a++) {
       try {
         // Testing aid: SIMULATE_BUSY=model1,model2 in .env pretends those models return 503
-        if (process.env.SIMULATE_BUSY?.split(',').map((s) => s.trim()).includes(models[mi])) throw new Error('503 UNAVAILABLE (simulated)');
-        const r = await ai.generate({ ...opts, model: googleAI.model(models[mi]), tools });
+        if (process.env.SIMULATE_BUSY?.split(',').map((x) => x.trim()).includes(m)) throw new Error('503 UNAVAILABLE (simulated)');
+        const r = await ai.generate({ ...opts, model: googleAI.model(m), tools });
         note(undefined);
         return r;
       } catch (e: any) {
         err = e;
+        const w = quotaWait(e);
+        if (w >= 120) { // daily quota: retrying will not help, move to the next model
+          exhausted.set(m, Date.now() + Math.min(w, 12 * 3600) * 1000);
+          console.warn(`[gemini] ${m} daily quota used up (resets in ~${Math.round(w / 60)} min). Skipping it.`);
+          break;
+        }
         if (!isBusy(e)) { note(undefined); throw e; }
-        console.warn(`[gemini] ${models[mi]} busy (attempt ${a + 1})`);
+        quotaOnly = false;
+        console.warn(`[gemini] ${m} busy (attempt ${a + 1})`);
         if (a === 0) { note('High demand right now. Retrying…'); await sleep(1500); }
       }
     }
-    if (mi < models.length - 1) note('Still busy. Switching to a backup model…');
+    if (mi < models.length - 1) note('Switching to a backup model…');
   }
   note(undefined);
   const busy: any = new Error('all models busy');
   busy.busy = true;
+  busy.quota = quotaOnly;
   busy.cause = err;
   throw busy;
 }
 
-async function serve(req: express.Request, res: express.Response, build: (s: { messages: any[]; pending?: any[]; note?: string }) => Promise<any>) {
+async function serve(req: express.Request, res: express.Response, build: (s: Session) => Promise<any>) {
   const { sessionId, userEmail } = req.body;
-  const s = S.get(sessionId) ?? { messages: [{ role: 'system', content: [{ text: system() }] }] };
+  const s: Session = S.get(sessionId) ?? { messages: [{ role: 'system', content: [{ text: system() }] }], done: new Map() };
   S.set(sessionId, s);
   const ctx: Ctx = { token: req.headers.authorization?.replace('Bearer ', ''), email: userEmail, log: [], sid: sessionId };
   try {
@@ -127,6 +164,7 @@ async function serve(req: express.Request, res: express.Response, build: (s: { m
     s.pending = r.interrupts?.length ? r.interrupts : undefined;
     // Keep the clip while a confirmation is pending (resume re-sends history once); drop it after the turn completes.
     s.messages = s.pending ? r.messages : stripMedia(r.messages);
+    if (!s.pending) s.done.clear(); // turn finished: later identical commands are new requests
     res.json(s.pending
       ? { status: 'needs_confirmation', message: 'Please confirm this action.',
           confirmations: s.pending.map((i: any) => ({ name: i.toolRequest.name, input: i.toolRequest.input })) }
@@ -137,7 +175,9 @@ async function serve(req: express.Request, res: express.Response, build: (s: { m
     if (e?.busy) {
       return res.status(503).json({
         status: 'busy',
-        message: 'Gemini is under very high demand right now, so this is taking longer than usual. Nothing was lost. Please try again in a minute.',
+        message: e.quota
+          ? 'The AI service has reached its usage limit for now, so I cannot process this yet. Please try again later.'
+          : 'Gemini is under very high demand right now, so this is taking longer than usual. Nothing was lost. Please try again in a minute.',
       });
     }
     res.status(500).json({ status: 'error', message: 'Something went wrong while handling that. Please try again.', detail: String(e?.message ?? e) });
