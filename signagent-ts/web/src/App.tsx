@@ -5,7 +5,6 @@ import { preloadHandLandmarker, getHandLandmarker, DrawingUtils, HandLandmarker 
 type Msg = {
   role: 'user' | 'assistant';
   text: string;
-  videoUrl?: string;
   actions?: { tool: string; input: any; result: any }[];
 };
 type Conf = { name: string; input: Record<string, any> };
@@ -20,11 +19,13 @@ const label = (n: unknown) => String(n ?? 'action').replace(/_/g, ' ');
 function Camera({
   onVideo,
   onClose,
-  disabled
+  disabled,
+  isBusyExternal
 }: {
   onVideo: (videoDataUrl: string) => void;
   onClose: () => void;
   disabled?: boolean;
+  isBusyExternal?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -75,7 +76,7 @@ function Camera({
 
   // Start recording
   const beginRecording = () => {
-    if (isRecordingRef.current || isProcessingRef.current || !streamRef.current || disabled) return;
+    if (isRecordingRef.current || isProcessingRef.current || !streamRef.current || disabled || isBusyExternal) return;
 
     recordedChunksRef.current = [];
     try {
@@ -245,20 +246,26 @@ function Camera({
         <video ref={videoRef} autoPlay muted playsInline />
         <canvas ref={canvasRef} />
         <div className="cam-hud">
-          {uiStatus === 'loading' && (
-            <span className="cam-badge">⏳ Loading hand tracker...</span>
-          )}
-          {uiStatus === 'waiting' && (
-            <span className="cam-badge ready">👋 Show hands to sign</span>
-          )}
-          {uiStatus === 'recording' && (
-            <span className="cam-badge rec">🔴 Recording ({recordSecs}s)</span>
-          )}
-          {uiStatus === 'countdown' && (
-            <span className="cam-badge countdown">⏳ Hands lowered (finishing...)</span>
-          )}
-          {uiStatus === 'processing' && (
-            <span className="cam-badge">⚙️ Sending video...</span>
+          {isBusyExternal ? (
+            <span className="cam-badge ai">✨ Converting sign to text...</span>
+          ) : (
+            <>
+              {uiStatus === 'loading' && (
+                <span className="cam-badge">⏳ Loading hand tracker...</span>
+              )}
+              {uiStatus === 'waiting' && (
+                <span className="cam-badge ready">👋 Show hands to sign</span>
+              )}
+              {uiStatus === 'recording' && (
+                <span className="cam-badge rec">🔴 Recording ({recordSecs}s)</span>
+              )}
+              {uiStatus === 'countdown' && (
+                <span className="cam-badge countdown">⏳ Hands lowered (finishing...)</span>
+              )}
+              {uiStatus === 'processing' && (
+                <span className="cam-badge">⚙️ Sending video...</span>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -293,6 +300,10 @@ export default function App() {
   const [pending, setPending] = useState<Conf[] | null>(null);
   const [cam, setCam] = useState(false);
   const [user, setUser] = useState<{ email: string; token: string } | null>(null);
+  const [liveTranslation, setLiveTranslation] = useState('');
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+
   const sid = useRef(crypto.randomUUID());
   const end = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
@@ -345,11 +356,51 @@ export default function App() {
     post('/api/chat', { text: t, workspaceContext: workspaceContext.trim() || undefined });
   }
 
-  // Multimodal sign video clip
-  function sendVideo(videoDataUrl: string) {
-    if (busyRef.current || pending) return;
-    add({ role: 'user', text: '📹 Sign language video clip', videoUrl: videoDataUrl });
-    post('/api/chat', { videoDataUrl, workspaceContext: workspaceContext.trim() || undefined });
+  // Translate sign video clip, type out the result in real-time, then send as text
+  async function handleSignVideo(videoDataUrl: string) {
+    if (busyRef.current || pending || isTranslating || isTyping) return;
+    setIsTranslating(true);
+    setLiveTranslation('Analyzing sign gestures...');
+    try {
+      const res = await fetch(`${API_BASE}/api/translate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoDataUrl,
+          workspaceContext: workspaceContext.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      const translatedText = data.translation?.trim();
+
+      if (!translatedText) {
+        setLiveTranslation('No signs recognized. Please try signing again.');
+        setIsTranslating(false);
+        return;
+      }
+
+      // Typewriter animation into input box & live translation box
+      setIsTranslating(false);
+      setIsTyping(true);
+      setLiveTranslation('');
+
+      const delay = Math.max(15, Math.min(35, Math.floor(700 / translatedText.length)));
+      for (let i = 1; i <= translatedText.length; i++) {
+        const slice = translatedText.slice(0, i);
+        setInput(slice);
+        setLiveTranslation(slice);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+
+      setIsTyping(false);
+      await new Promise((r) => setTimeout(r, 350));
+      send(translatedText);
+    } catch (e: any) {
+      console.error(e);
+      setLiveTranslation('Could not transcribe sign. Please try again.');
+      setIsTranslating(false);
+      setIsTyping(false);
+    }
   }
 
   function decide(approved: boolean) {
@@ -366,7 +417,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${cam ? 'with-cam' : ''}`}>
       <header>
         <b>SignAgent</b>
         <button
@@ -389,126 +440,146 @@ export default function App() {
         )}
       </header>
 
-      <main>
-        {msgs.length === 0 && (
-          <div className="empty">
-            <h1>Sign it or type it. SignAgent does it.</h1>
-            <div className="ideas">
-              {IDEAS.map((i) => (
-                <button key={i} className="ghost" onClick={() => send(i)}>
-                  {i}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {msgs.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>
-            {m.videoUrl && (
-              <div className="video-thumb">
-                <video src={m.videoUrl} controls playsInline />
+      <div className="app-body">
+        {cam && (
+          <div className="cam-panel">
+            <Camera
+              onVideo={handleSignVideo}
+              onClose={() => setCam(false)}
+              disabled={busy || !!pending || isTranslating || isTyping}
+              isBusyExternal={isTranslating || isTyping}
+            />
+            <div className="translation-card">
+              <div className="translation-header">
+                <span>Sign-to-Text Conversion</span>
+                {isTranslating && <span className="dots">Interpreting…</span>}
+                {isTyping && <span className="pill-btn active">Typing…</span>}
               </div>
-            )}
-            <p>{m.text}</p>
-            {m.actions?.map((a, k) => (
-              <div key={k} className="act">
-                <b>{label(a.tool)}</b>
-                {a.result?.simulated && <i> (simulated)</i>}
-                {a.result?.error && <span className="err"> {a.result.error}</span>}
-                {(a.result?.url || a.result?.htmlLink) && (
-                  <> <a href={a.result.url ?? a.result.htmlLink} target="_blank" rel="noreferrer">open</a></>
+              <div className={`translation-text ${!liveTranslation ? 'empty' : ''}`}>
+                {liveTranslation ? (
+                  <>
+                    {liveTranslation}
+                    {isTyping && <span className="typing-cursor" />}
+                  </>
+                ) : (
+                  'Show hands to sign. Recognized text will type out here.'
                 )}
               </div>
-            ))}
-          </div>
-        ))}
-
-        {pending && (
-          <div className="confirm">
-            <b>Confirm before I do this</b>
-            {pending.map((c, i) => (
-              <dl key={i}>
-                <dt className="what">{label(c.name)}</dt>
-                {Object.entries(c.input ?? {}).map(([k, v]) => (
-                  <div key={k}>
-                    <dt>{k}</dt>
-                    <dd>{String(v)}</dd>
-                  </div>
-                ))}
-              </dl>
-            ))}
-            <div className="row">
-              <button className="go" disabled={busy} onClick={() => decide(true)}>
-                Confirm
-              </button>
-              <button className="ghost" disabled={busy} onClick={() => decide(false)}>
-                Cancel
-              </button>
             </div>
           </div>
         )}
 
-        {busy && !pending && (
-          <div className="msg assistant">
-            <p className="dots">Working…</p>
-          </div>
-        )}
-        <div ref={end} />
-      </main>
+        <div className="chat-panel">
+          {showContext && (
+            <div className="context-box">
+              <label>Active Workspace Context (e.g. Jira issue, meeting notes, screen text):</label>
+              <input
+                value={workspaceContext}
+                onChange={(e) => setWorkspaceContext(e.target.value)}
+                placeholder="e.g. Active tab: Jira Issue PROJ-42, PR review, or meeting notes"
+              />
+            </div>
+          )}
 
-      {showContext && (
-        <div className="context-box">
-          <label>Active Workspace Context (e.g. Jira issue, meeting notes, screen text):</label>
-          <input
-            value={workspaceContext}
-            onChange={(e) => setWorkspaceContext(e.target.value)}
-            placeholder="e.g. Active tab: Jira Issue PROJ-42, PR review, or meeting notes"
-          />
+          <main>
+            {msgs.length === 0 && (
+              <div className="empty">
+                <h1>Sign it or type it. SignAgent does it.</h1>
+                <div className="ideas">
+                  {IDEAS.map((i) => (
+                    <button key={i} className="ghost" onClick={() => send(i)}>
+                      {i}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {msgs.map((m, i) => (
+              <div key={i} className={`msg ${m.role}`}>
+                <p>{m.text}</p>
+                {m.actions?.map((a, k) => (
+                  <div key={k} className="act">
+                    <b>{label(a.tool)}</b>
+                    {a.result?.simulated && <i> (simulated)</i>}
+                    {a.result?.error && <span className="err"> {a.result.error}</span>}
+                    {(a.result?.url || a.result?.htmlLink) && (
+                      <> <a href={a.result.url ?? a.result.htmlLink} target="_blank" rel="noreferrer">open</a></>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {pending && (
+              <div className="confirm">
+                <b>Confirm before I do this</b>
+                {pending.map((c, i) => (
+                  <dl key={i}>
+                    <dt className="what">{label(c.name)}</dt>
+                    {Object.entries(c.input ?? {}).map(([k, v]) => (
+                      <div key={k}>
+                        <dt>{k}</dt>
+                        <dd>{String(v)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ))}
+                <div className="row">
+                  <button className="go" disabled={busy} onClick={() => decide(true)}>
+                    Confirm
+                  </button>
+                  <button className="ghost" disabled={busy} onClick={() => decide(false)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {busy && !pending && (
+              <div className="msg assistant">
+                <p className="dots">Working…</p>
+              </div>
+            )}
+            <div ref={end} />
+          </main>
+
+          <form
+            className="composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              send();
+            }}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={pending ? 'Confirm or cancel above first' : 'Type a command, or open the camera'}
+              disabled={isTyping}
+            />
+            <button
+              type="button"
+              className={`icon ${cam ? 'on' : ''}`}
+              aria-label="Toggle camera for sign input"
+              onClick={() => setCam(!cam)}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <path d="m15 10 6-3v10l-6-3" />
+              </svg>
+            </button>
+            <button
+              className="icon send"
+              aria-label="Send"
+              disabled={!input.trim() || busy || !!pending || isTyping}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+            </button>
+          </form>
         </div>
-      )}
-
-      {cam && (
-        <Camera
-          onVideo={sendVideo}
-          onClose={() => setCam(false)}
-          disabled={busy || !!pending}
-        />
-      )}
-
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={pending ? 'Confirm or cancel above first' : 'Type a command, or open the camera'}
-        />
-        <button
-          type="button"
-          className={`icon ${cam ? 'on' : ''}`}
-          aria-label="Toggle camera for sign input"
-          onClick={() => setCam(!cam)}
-        >
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            <path d="m15 10 6-3v10l-6-3" />
-          </svg>
-        </button>
-        <button
-          className="icon send"
-          aria-label="Send"
-          disabled={!input.trim() || busy || !!pending}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 19V5M5 12l7-7 7 7" />
-          </svg>
-        </button>
-      </form>
+      </div>
     </div>
   );
 }

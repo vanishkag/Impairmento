@@ -112,6 +112,51 @@ async function serve(req: express.Request, res: express.Response, build: (s: { m
 const app = express();
 app.use(cors(), express.json({ limit: '50mb' }), express.urlencoded({ limit: '50mb', extended: true }));
 app.get('/health', (_q, r) => r.json({ ok: true, model: MODEL, dryRun: process.env.DRY_RUN === 'true' }));
+app.post('/api/translate', async (req, res) => {
+  const { videoDataUrl, workspaceContext } = req.body ?? {};
+  if (!videoDataUrl || typeof videoDataUrl !== 'string') {
+    return res.status(400).json({ error: 'No video provided' });
+  }
+
+  const prompt = `You are an expert sign language interpreter for Deaf, speech-disabled, and hard-of-hearing professionals.
+Watch the attached sign language video clip carefully. The signer may be using Indian Sign Language (ISL) or American Sign Language (ASL).
+${workspaceContext ? `Active Workspace Context: ${workspaceContext}\n` : ''}
+Translate the sign gestures and intent into a natural, direct English command or sentence representing exactly what the user signed (e.g. "Schedule a meeting tomorrow at 3 PM", "Email me a packing list for Goa", "Directions to Bangalore airport").
+Output ONLY the clean translated English sentence, with no conversational filler, quotes, or markdown explanations.`;
+
+  try {
+    const response = await ai.generate({
+      model: googleAI.model(MODEL),
+      prompt: [
+        { text: prompt },
+        { media: { url: videoDataUrl } },
+      ],
+      config: { temperature: 0.1 },
+    });
+
+    const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
+    res.json({ translation });
+  } catch (e: any) {
+    console.error('Translation error:', e);
+    const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-2.5-flash,gemini-1.5-flash').split(',');
+    for (const m of fallbacks.map((s) => s.trim()).filter(Boolean)) {
+      try {
+        const response = await ai.generate({
+          model: googleAI.model(m),
+          prompt: [
+            { text: prompt },
+            { media: { url: videoDataUrl } },
+          ],
+          config: { temperature: 0.1 },
+        });
+        const translation = response.text?.trim()?.replace(/^["']|["']$/g, '') || '';
+        return res.json({ translation });
+      } catch {}
+    }
+    res.status(500).json({ error: String(e?.message ?? e) });
+  }
+});
+
 app.post('/api/chat', (q, r) => serve(q, r, (s) => {
   const { text, videoDataUrl, workspaceContext } = q.body ?? {};
   const promptParts: any[] = [];
