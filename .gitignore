@@ -1,7 +1,7 @@
 .env
 .env.*
 *.env
-
+env.yaml
 # Dependencies
 node_modules/
 npm-debug.log*
