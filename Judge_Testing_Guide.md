@@ -16,10 +16,7 @@ SignAgent lets Deaf, hard-of-hearing and speech-impaired people use agentic AI b
 
 You can sign in with your own Google account, or use the shared demo account below.
 
-| | |
-|---|---|
-| **Email** | `signagent.buildercup@gmail.com` |
-| **Password** | `signAgent@9654` |
+
 
 1. Open the app and click **Sign in with Google** at the top right.
 2. In the Google pop-up, enter the demo email and password, or choose your own account.
