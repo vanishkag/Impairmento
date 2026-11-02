@@ -137,9 +137,9 @@ Translate the sign gestures and intent into a natural, direct English command or
 Output ONLY the clean translated English sentence, with no conversational filler, quotes, or markdown explanations.`;
 
   const candidates = [
-    process.env.GEMINI_TRANSLATE_MODEL ?? 'gemini-3.1-flash-lite',
-    ...(process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(','),
-  ].map((s) => s.trim()).filter(Boolean);
+  process.env.GEMINI_TRANSLATE_MODEL ?? 'gemini-2.0-flash-lite',
+  ...(process.env.GEMINI_FALLBACK_MODEL ?? '').split(','),
+].map((s) => s.trim()).filter(Boolean);
 
   const translateTemp = Number(process.env.GEMINI_TRANSLATE_TEMPERATURE ?? 0.2);
   const translateTopP = Number(process.env.GEMINI_TRANSLATE_TOP_P ?? 0.85);
