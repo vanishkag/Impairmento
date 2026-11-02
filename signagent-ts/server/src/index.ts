@@ -6,7 +6,7 @@ import { z } from 'genkit';
 import { genkit } from 'genkit/beta';
 import { googleAI } from '@genkit-ai/google-genai';
 
-const MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-flash';
+const MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
 const TZ = process.env.TIMEZONE ?? 'Asia/Kolkata';
 const ai = genkit({ plugins: [googleAI()] });
 
