@@ -6,7 +6,7 @@ import { z } from 'genkit';
 import { genkit } from 'genkit/beta';
 import { googleAI } from '@genkit-ai/google-genai';
 
-const MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-flash';
+const MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
 const TZ = process.env.TIMEZONE ?? 'Asia/Kolkata';
 const ai = genkit({ plugins: [googleAI()] });
 
@@ -75,18 +75,29 @@ If a required detail is missing or you are unsure what was signed, ask ONE short
 Reply in one or two plain, simple sentences saying what was done.`;
 
 async function gen(opts: any) {
-  let err: any;
-  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(',');
-  for (const m of [MODEL, ...fallbacks].map((s) => s.trim()).filter(Boolean))
-    for (let a = 0; a < 3; a++) {
-      try { return await ai.generate({ ...opts, model: googleAI.model(m), tools }); }
-      catch (e: any) {
-        err = e;
-        if (!/503|429|UNAVAILABLE/.test(String(e))) throw e;
-        await new Promise((r) => setTimeout(r, 1500 * (a + 1)));
+  const fallbacks = (process.env.GEMINI_FALLBACK_MODEL ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const models = [MODEL, ...fallbacks];
+
+  let lastErr: any = null;
+
+  for (const m of models) {
+    try {
+      return await ai.generate({ ...opts, model: googleAI.model(m), tools });
+    } catch (e: any) {
+      lastErr = e;
+
+      const msg = String(e?.message ?? e ?? '');
+      if (/429|RESOURCE_EXHAUSTED|RATE_LIMIT|QUOTA_EXCEEDED/i.test(msg)) {
+        throw new Error(`Gemini quota exceeded for ${m}. Please wait or upgrade your API quota.`);
+      }
+
+      if (!/503|UNAVAILABLE|TIMEOUT/i.test(msg)) {
+        throw e;
       }
     }
-  throw err;
+  }
+
+  throw lastErr ?? new Error('Gemini request failed');
 }
 
 const S = new Map<string, { messages: any[]; pending?: any[] }>(); // in-memory sessions (no database)
@@ -126,9 +137,9 @@ Translate the sign gestures and intent into a natural, direct English command or
 Output ONLY the clean translated English sentence, with no conversational filler, quotes, or markdown explanations.`;
 
   const candidates = [
-    process.env.GEMINI_TRANSLATE_MODEL ?? 'gemini-3.1-flash-lite',
-    ...(process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite,gemini-3.5-flash').split(','),
-  ].map((s) => s.trim()).filter(Boolean);
+  process.env.GEMINI_TRANSLATE_MODEL ?? 'gemini-2.0-flash-lite',
+  ...(process.env.GEMINI_FALLBACK_MODEL ?? '').split(','),
+].map((s) => s.trim()).filter(Boolean);
 
   const translateTemp = Number(process.env.GEMINI_TRANSLATE_TEMPERATURE ?? 0.2);
   const translateTopP = Number(process.env.GEMINI_TRANSLATE_TOP_P ?? 0.85);
